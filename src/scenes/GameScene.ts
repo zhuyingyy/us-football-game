@@ -46,7 +46,6 @@ export class GameScene extends Phaser.Scene {
   private endScore!: Phaser.GameObjects.Text;
   private endTitle!: Phaser.GameObjects.Text;
   private endSummary!: Phaser.GameObjects.Text;
-  private pauseOverlay!: Phaser.GameObjects.Container;
   private controls!: Phaser.GameObjects.Graphics;
   private startPrompt!: Phaser.GameObjects.Container;
   private muted = false;
@@ -106,11 +105,13 @@ export class GameScene extends Phaser.Scene {
     this.refreshHud();
     this.input.on('pointerdown', this.onTap, this);
     this.input.keyboard?.on('keydown-SPACE', this.onSpace, this);
-    this.input.keyboard?.on('keydown-ESC', this.togglePause, this);
     this.input.keyboard?.addCapture(['SPACE']);
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.cleanup, this);
     this.game.events.on(Phaser.Core.Events.BLUR, this.onBlur, this);
-    this.game.canvas.setAttribute('aria-label', 'Field Goal Rush. Goal position and shot type change after a goal. Every third challenge pays double coins. Tap or press space when the landing marker lines up with the goal. Escape pauses.');
+    this.game.events.on(Phaser.Core.Events.HIDDEN, this.onBlur, this);
+    this.game.events.on(Phaser.Core.Events.FOCUS, this.onFocus, this);
+    this.game.events.on(Phaser.Core.Events.VISIBLE, this.onFocus, this);
+    this.game.canvas.setAttribute('aria-label', 'Field Goal Rush. Goal position and shot type change after a goal. Every third challenge pays double coins. Tap or press space when the landing marker lines up with the goal.');
     this.game.canvas.setAttribute('tabindex', '0');
     this.announce('30 seconds, 3 lives. First kick starts the clock. Good earns 1 coin, Perfect earns 3. Every 3 consecutive Perfects earns 3 bonus coins.');
     this.drawAim();
@@ -298,10 +299,7 @@ export class GameScene extends Phaser.Scene {
   private createControls() {
     this.controls = this.add.graphics().setDepth(21);
     this.drawControls();
-    const dim = this.add.rectangle(390, 822, 780, 1644, 0x020d23, .83);
-    const title = this.text(390, 750, 'PAUSED', 110, '#c5ff35');
-    const caption = this.text(390, 865, 'TAP TO GET BACK IN', 29, '#b8e7fa').setLetterSpacing(3);
-    this.pauseOverlay = this.add.container(0, 0, [dim, title, caption]).setDepth(20).setVisible(false);
+
   }
 
   private drawControls() {
@@ -327,7 +325,7 @@ export class GameScene extends Phaser.Scene {
       if (pointer.x >= 110 && pointer.x <= 670 && pointer.y >= 1080 && pointer.y <= 1190) this.restartRun();
       return;
     }
-    if (this.paused) { this.togglePause(); return; }
+    if (this.paused) this.setPaused(false);
     if (pointer.y < 350) return;
     this.kick();
   }
@@ -336,7 +334,8 @@ export class GameScene extends Phaser.Scene {
     if (event.repeat) return;
     this.effects.unlockAudio();
     if (this.state === 'GAME_OVER') { this.restartRun(); return; }
-    if (this.paused) this.togglePause(); else this.kick();
+    if (this.paused) this.setPaused(false);
+    this.kick();
   }
 
   private startMusic() {
@@ -347,23 +346,28 @@ export class GameScene extends Phaser.Scene {
 
   private onBlur() {
     this.music.pause();
-    if (!this.paused) this.togglePause();
+    this.setPaused(true);
     this.effects.stopSounds();
   }
 
-  private togglePause() {
-    if (this.state === 'GAME_OVER') return;
+  private onFocus() {
+    if (document.hidden) return;
+    this.setPaused(false);
+    if (this.music.isPaused) this.startMusic();
+  }
+
+  private setPaused(paused: boolean) {
+    if (this.state === 'GAME_OVER' || this.paused === paused) return;
     if (!this.paused) {
       this.syncClock();
       if (this.state as State === 'GAME_OVER') return;
       this.clock.pause(performance.now());
     } else this.clock.resume(performance.now());
-    this.paused = !this.paused;
-    this.pauseOverlay.setVisible(this.paused);
+    this.paused = paused;
     this.time.paused = this.paused;
     this.effects.setMuted(this.paused || this.muted);
     this.effects.setPaused(this.paused);
-    if (this.paused) this.music.pause(); else this.startMusic();
+    if (this.paused) this.music.pause(); else if (this.music.isPaused) this.startMusic();
     if (this.paused) this.tweens.pauseAll(); else this.tweens.resumeAll();
     this.drawControls();
   }
@@ -541,8 +545,10 @@ export class GameScene extends Phaser.Scene {
     this.resetTimer = undefined;
     this.input.off('pointerdown', this.onTap, this);
     this.input.keyboard?.off('keydown-SPACE', this.onSpace, this);
-    this.input.keyboard?.off('keydown-ESC', this.togglePause, this);
     this.game.events.off(Phaser.Core.Events.BLUR, this.onBlur, this);
+    this.game.events.off(Phaser.Core.Events.HIDDEN, this.onBlur, this);
+    this.game.events.off(Phaser.Core.Events.FOCUS, this.onFocus, this);
+    this.game.events.off(Phaser.Core.Events.VISIBLE, this.onFocus, this);
     this.tweens.killAll();
     this.ball.destroy(); this.effects.destroy(); this.music.destroy(); this.ambience.destroy();
     this.time.paused = false;

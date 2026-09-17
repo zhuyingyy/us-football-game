@@ -112,7 +112,7 @@ try {
   const locked = await page.evaluate(() => {
     const s = window.__FIELD_GOAL_GAME__.scene.getScene('Game'); return [s.goal.x, s.lockedAimX, s.finalTargetX, s.lockedRound.wind];
   });
-  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.__FIELD_GOAL_GAME__.events.emit('blur'));
   const frozen = await snapshot();
   await page.waitForTimeout(400);
   assert.equal((await snapshot()).remaining, frozen.remaining);
@@ -120,7 +120,7 @@ try {
   assert.deepEqual(await page.evaluate(() => {
     const s = window.__FIELD_GOAL_GAME__.scene.getScene('Game'); return [s.goal.x, s.lockedAimX, s.finalTargetX, s.lockedRound.wind];
   }), locked);
-  await page.keyboard.press('Escape'); await waitState('AIMING');
+  await page.evaluate(() => window.__FIELD_GOAL_GAME__.events.emit('focus')); await waitState('AIMING');
   assert.equal((await snapshot()).count, before + 1);
   assert.equal((await snapshot()).run.score, 19);
   checks.push('Rapid taps count once; pause freezes both the clock and the in-flight shot');
@@ -131,7 +131,7 @@ try {
   await page.evaluate(() => window.__FIELD_GOAL_GAME__.events.emit('blur'));
   const blurred = await snapshot(); assert.equal(blurred.paused, true);
   await page.waitForTimeout(200); assert.equal((await snapshot()).remaining, blurred.remaining);
-  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.__FIELD_GOAL_GAME__.events.emit('focus'));
   checks.push('Countdown follows elapsed time and window blur pauses it');
 
   const retryLayout = (await snapshot()).round;

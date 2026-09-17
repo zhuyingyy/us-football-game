@@ -41,10 +41,10 @@ try {
   assert.equal((await read()).seek, muted.seek);
   await page.mouse.click(45, 58);
   assert.equal((await read()).playing, true);
-  await page.keyboard.press('Escape');
+  await page.evaluate(() => window.__FIELD_GOAL_GAME__.events.emit('blur'));
   const paused = await read(); assert.equal(paused.playing, false);
   await page.waitForTimeout(160); assert.equal((await read()).seek, paused.seek);
-  await page.keyboard.press('Escape'); assert.equal((await read()).playing, true);
+  await page.evaluate(() => window.__FIELD_GOAL_GAME__.events.emit('focus')); assert.equal((await read()).playing, true);
   await page.evaluate(() => {
     const s = window.__FIELD_GOAL_GAME__.scene.getScene('Game');
     window.__musicLoops = 0;

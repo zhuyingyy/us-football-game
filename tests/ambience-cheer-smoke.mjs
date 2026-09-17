@@ -14,9 +14,9 @@ try {
   const a = await sample(); await p.waitForTimeout(400); const b = await sample();
   assert.notEqual(a.flag, b.flag, 'Flag artwork actually changes');
   assert.notDeepEqual(a.lights, b.lights, 'Crowd lights animate');
-  await p.keyboard.press('Escape'); const paused = await sample();
+  await p.evaluate(() => window.__FIELD_GOAL_GAME__.events.emit('blur')); const paused = await sample();
   await p.waitForTimeout(200); assert.deepEqual(await sample(), paused, 'Pause freezes ambience');
-  await p.keyboard.press('Escape');
+  await p.evaluate(() => window.__FIELD_GOAL_GAME__.events.emit('focus'));
   const result = await p.evaluate(async () => {
     const s = window.__FIELD_GOAL_GAME__.scene.getScene('Game');
     const fx = s.effects;
