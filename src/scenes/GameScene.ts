@@ -35,7 +35,6 @@ export class GameScene extends Phaser.Scene {
   private hud!: Phaser.GameObjects.Container;
   private goal!: Phaser.GameObjects.Image;
   private goalShadow!: Phaser.GameObjects.Image;
-  private goalCastShadow!: Phaser.GameObjects.Image;
   private goalLightLeft!: Phaser.GameObjects.Image;
   private goalLightRight!: Phaser.GameObjects.Image;
   private target!: Phaser.GameObjects.Graphics;
@@ -144,21 +143,6 @@ export class GameScene extends Phaser.Scene {
       ctx.globalCompositeOperation = 'source-over';
       texture.refresh();
     }
-    // Cache a softly blurred silhouette of the actual sprite for the ground projection.
-    if (!this.textures.exists('goal-cast-shadow')) {
-      const texture = this.textures.createCanvas('goal-cast-shadow', 324, 546)!;
-      const ctx = texture.context;
-      ctx.filter = 'blur(3px)';
-      ctx.drawImage(this.textures.get('goal').getSourceImage() as HTMLImageElement, 12, 12, 300, 522);
-      ctx.filter = 'none';
-      ctx.globalCompositeOperation = 'source-in';
-      ctx.fillStyle = '#00140b';
-      ctx.fillRect(0, 0, 324, 546);
-      ctx.globalCompositeOperation = 'source-over';
-      texture.refresh();
-    }
-    this.goalCastShadow = this.add.image(390, TUNING.goalBaseY + 10, 'goal-cast-shadow')
-      .setOrigin(.5, .04).setFlipY(true).setAngle(-28).setAlpha(.22).setDepth(3);
     this.goalShadow = this.add.image(390, TUNING.goalBaseY + 10, 'glow')
       .setTint(0x000c05).setAlpha(.88).setDepth(3);
     const materialDepth = 4;
@@ -183,7 +167,6 @@ export class GameScene extends Phaser.Scene {
     this.goal.setPosition(x, topY - 10 * scale)
       .setDisplaySize(300 * scale, 522 * scale);
     this.goalShadow.setPosition(x, base + 10 * scale).setDisplaySize(150 * scale, 32 * scale);
-    this.goalCastShadow.setPosition(x, base + 10 * scale).setDisplaySize(324 * scale, 155 * scale);
     // GOLD changes rewards and guide color, never the goalpost's paint or padding.
     this.goal.clearTint();
     const across = Phaser.Math.Clamp(x / DESIGN_WIDTH, 0, 1);
@@ -191,7 +174,6 @@ export class GameScene extends Phaser.Scene {
       .setAlpha(.45 + .3 * (1 - across));
     this.goalLightRight.setPosition(this.goal.x, this.goal.y).setDisplaySize(this.goal.displayWidth, this.goal.displayHeight)
       .setAlpha(.45 + .3 * across);
-    this.goalCastShadow.setAngle(-18 - (across - .5) * 24);
     const target = this.target.clear();
     target.fillStyle(0xc5ff35, .035).fillRoundedRect(x - perfectRange, topY + 25 * scale, perfectRange * 2, top - topY - 50 * scale, 12);
     target.lineStyle(2, 0xd7ff83, .48);
