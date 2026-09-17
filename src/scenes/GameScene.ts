@@ -1,0 +1,599 @@
+import Phaser from 'phaser';
+import { ASSETS, DESIGN_HEIGHT, DESIGN_WIDTH, TUNING } from '../config/GameTuning';
+import { BallController } from '../game/BallController';
+import { Effects } from '../game/Effects';
+import { judgeKick, type KickResult } from '../game/math';
+import { createRound, goalPosition, aimPosition, RUN_RULES, type Round } from '../config/levels';
+import { newRun, recordKick, readBest, saveBest } from '../game/RunState';
+import { RunClock } from '../game/RunClock';
+import { StadiumAmbience } from '../game/StadiumAmbience';
+
+type State = 'TRANSITION' | 'AIMING' | 'KICKING' | 'RESULT' | 'GAME_OVER';
+
+export class GameScene extends Phaser.Scene {
+  state: State = 'AIMING';
+  lockedAimX = TUNING.goalCenterX as number;
+  lastResult: KickResult | null = null;
+  kickCount = 0;
+  paused = false;
+  run = newRun();
+  clock = new RunClock();
+  round: Round = createRound(0);
+  bestScore = 0;
+  finalTargetX = TUNING.goalCenterX as number;
+  private motionTime = 0;
+  private visualTime = 0;
+  private goalVisual = { centerX: 390, scale: 1 };
+  private aimVisual = { x: 390, windOffset: 0 };
+  private lockedRound?: Round;
+  private ball!: BallController;
+  private effects!: Effects;
+  private ambience!: StadiumAmbience;
+  private music!: Phaser.Sound.BaseSound;
+  private aim!: Phaser.GameObjects.Graphics;
+  private marker!: Phaser.GameObjects.Container;
+  private hud!: Phaser.GameObjects.Container;
+  private goal!: Phaser.GameObjects.Image;
+  private goalShadow!: Phaser.GameObjects.Image;
+  private goalCastShadow!: Phaser.GameObjects.Image;
+  private goalLightLeft!: Phaser.GameObjects.Image;
+  private goalLightRight!: Phaser.GameObjects.Image;
+  private target!: Phaser.GameObjects.Graphics;
+  private scoreText!: Phaser.GameObjects.Text;
+  private goalsText!: Phaser.GameObjects.Text;
+  private timerText!: Phaser.GameObjects.Text;
+  private heartImages: Phaser.GameObjects.Image[] = [];
+  private gameOver!: Phaser.GameObjects.Container;
+  private endScore!: Phaser.GameObjects.Text;
+  private endTitle!: Phaser.GameObjects.Text;
+  private endSummary!: Phaser.GameObjects.Text;
+  private pauseOverlay!: Phaser.GameObjects.Container;
+  private controls!: Phaser.GameObjects.Graphics;
+  private startPrompt!: Phaser.GameObjects.Container;
+  private muted = false;
+  private resetTimer?: Phaser.Time.TimerEvent;
+
+  constructor() { super('Game'); }
+
+  preload() {
+    this.load.image('stadium', ASSETS.stadium);
+    this.load.image('football', ASSETS.football);
+    this.load.image('goal', ASSETS.goal);
+    this.load.image('coin', ASSETS.coin);
+    this.load.image('heart', ASSETS.heart);
+    this.load.audio('music', ASSETS.music);
+    this.load.audio('cheer', ASSETS.cheer);
+    this.load.on('loaderror', this.onLoadError, this);
+  }
+
+  create() {
+    document.getElementById('loading')?.remove();
+    this.load.off('loaderror', this.onLoadError, this);
+    this.state = 'AIMING'; this.paused = false; this.motionTime = 0; this.kickCount = 0; this.lastResult = null;
+    this.visualTime = 0;
+    this.run = newRun(); this.clock = new RunClock(); this.round = createRound(0);
+    this.goalVisual = { centerX: this.round.centerX, scale: this.round.goalScale };
+    this.aimVisual = { x: aimPosition(0, this.round), windOffset: this.round.windOffset };
+    this.lockedRound = undefined;
+    try { this.bestScore = Math.max(this.bestScore, readBest(window.localStorage)); } catch { /* Storage may be unavailable. */ }
+    Effects.createTextures(this);
+    this.add.image(DESIGN_WIDTH / 2, DESIGN_HEIGHT, 'stadium').setOrigin(.5, 1)
+      .setDisplaySize(DESIGN_WIDTH * TUNING.stadiumScale, DESIGN_HEIGHT * TUNING.stadiumScale);
+    this.ambience = new StadiumAmbience(this);
+    // Soft vignettes frame the compact HUD and the field.
+    const shade = this.add.graphics().setDepth(1);
+    shade.fillGradientStyle(0x01091e, 0x01091e, 0x01091e, 0x01091e, .7, .7, 0, 0).fillRect(0, 0, 780, 480);
+    shade.fillGradientStyle(0x001b13, 0x001b13, 0x00100c, 0x00100c, 0, 0, .85, .85).fillRect(0, 1390, 780, 254);
+    this.createGoal();
+    this.createHud();
+    this.aim = this.add.graphics().setDepth(5).setBlendMode(Phaser.BlendModes.ADD);
+    const circle = this.add.circle(0, 0, 18, 0xc5ff35, .15).setStrokeStyle(3, 0xd4ff87);
+    const dot = this.add.circle(0, 0, 7, 0xf5ffec);
+    const glow = this.add.image(0, 0, 'glow').setTint(0xaaff28).setDisplaySize(100, 100).setAlpha(.55).setBlendMode(Phaser.BlendModes.ADD);
+    this.marker = this.add.container(390, TUNING.goalTargetY, [glow, circle, dot]).setDepth(5);
+    this.ball = new BallController(this);
+    this.ball.prepare(this.round.startX);
+    this.createStartPrompt();
+    this.effects = new Effects(this);
+    this.effects.setMuted(this.muted);
+    // One loop per scene. Input starts it, satisfying mobile autoplay restrictions.
+    this.sound.pauseOnBlur = false;
+    this.music = this.sound.add('music');
+    this.music.addMarker({ name: 'loop', start: 0, duration: 30, config: { loop: true, volume: .28 } });
+    this.createControls();
+    this.createPhoneChrome();
+    this.createGameOver();
+    this.refreshHud();
+    this.input.on('pointerdown', this.onTap, this);
+    this.input.keyboard?.on('keydown-SPACE', this.onSpace, this);
+    this.input.keyboard?.on('keydown-ESC', this.togglePause, this);
+    this.input.keyboard?.addCapture(['SPACE']);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, this.cleanup, this);
+    this.game.events.on(Phaser.Core.Events.BLUR, this.onBlur, this);
+    this.game.canvas.setAttribute('aria-label', 'Field Goal Rush. Goal position and shot type change after a goal. Every third challenge pays double coins. Tap or press space when the landing marker lines up with the goal. Escape pauses.');
+    this.game.canvas.setAttribute('tabindex', '0');
+    this.announce('30 seconds, 3 lives. First kick starts the clock. Good earns 1 coin, Perfect earns 3. Every 3 consecutive Perfects earns 3 bonus coins.');
+    this.drawAim();
+  }
+
+  private onLoadError(file: Phaser.Loader.File) {
+    const small = document.querySelector('#loading small');
+    if (small) small.textContent = `Could not load ${file.key}. Please refresh.`;
+  }
+
+  private text(x: number, y: number, value: string, size: number, color = '#ffffff') {
+    return this.add.text(x, y, value, { fontFamily: 'Barlow', fontSize: `${size}px`, fontStyle: 'bold', color, align: 'center' }).setOrigin(.5);
+  }
+
+  private createGoal() {
+    // Cache alpha-clipped stadium reflections, keeping the original gold / blue material.
+    for (const side of ['left', 'right'] as const) {
+      const key = `goal-light-${side}`;
+      if (this.textures.exists(key)) continue;
+      const texture = this.textures.createCanvas(key, 600, 1044)!;
+      const ctx = texture.context;
+      ctx.drawImage(this.textures.get('goal').getSourceImage() as HTMLImageElement, 0, 0, 600, 1044);
+      ctx.globalCompositeOperation = 'source-in';
+      const light = ctx.createLinearGradient(side === 'left' ? 0 : 600, 0, side === 'left' ? 600 : 0, 0);
+      light.addColorStop(0, 'rgba(180,205,255,.7)');
+      light.addColorStop(.13, 'rgba(115,145,255,.18)');
+      light.addColorStop(.5, 'rgba(100,130,255,.065)');
+      light.addColorStop(1, 'rgba(100,130,255,0)');
+      ctx.fillStyle = light; ctx.fillRect(0, 0, 600, 1044);
+      ctx.globalCompositeOperation = 'source-over';
+      texture.refresh();
+    }
+    // Cache a softly blurred silhouette of the actual sprite for the ground projection.
+    if (!this.textures.exists('goal-cast-shadow')) {
+      const texture = this.textures.createCanvas('goal-cast-shadow', 324, 546)!;
+      const ctx = texture.context;
+      ctx.filter = 'blur(3px)';
+      ctx.drawImage(this.textures.get('goal').getSourceImage() as HTMLImageElement, 12, 12, 300, 522);
+      ctx.filter = 'none';
+      ctx.globalCompositeOperation = 'source-in';
+      ctx.fillStyle = '#00140b';
+      ctx.fillRect(0, 0, 324, 546);
+      ctx.globalCompositeOperation = 'source-over';
+      texture.refresh();
+    }
+    this.goalCastShadow = this.add.image(390, TUNING.goalBaseY + 10, 'goal-cast-shadow')
+      .setOrigin(.5, .04).setFlipY(true).setAngle(-28).setAlpha(.22).setDepth(3);
+    this.goalShadow = this.add.image(390, TUNING.goalBaseY + 10, 'glow')
+      .setTint(0x000c05).setAlpha(.88).setDepth(3);
+    const materialDepth = 4;
+    this.goal = this.add.image(390, 470, 'goal').setOrigin(.5, 0).setDepth(materialDepth);
+    this.goalLightLeft = this.add.image(390, 470, 'goal-light-left').setOrigin(.5, 0)
+      .setBlendMode(Phaser.BlendModes.ADD).setDepth(materialDepth + .1);
+    this.goalLightRight = this.add.image(390, 470, 'goal-light-right').setOrigin(.5, 0)
+      .setBlendMode(Phaser.BlendModes.ADD).setDepth(materialDepth + .2);
+    this.target = this.add.graphics().setDepth(2);
+    this.refreshGoal();
+  }
+
+  private refreshGoal() {
+    const x = this.goalVisual.centerX;
+    const base = TUNING.goalBaseY;
+    const scale = this.goalVisual.scale;
+    const top = base + (TUNING.goalCrossbarY - base) * scale;
+    const topY = base + (TUNING.goalTopY - base) * scale;
+    const targetY = base + (TUNING.goalTargetY - base) * scale;
+    const perfectRange = this.round.perfectRange * scale / this.round.goalScale;
+    // Single 300×522 transparent sprite: uprights plus support, preserving collision coordinates.
+    this.goal.setPosition(x, topY - 10 * scale)
+      .setDisplaySize(300 * scale, 522 * scale);
+    this.goalShadow.setPosition(x, base + 10 * scale).setDisplaySize(150 * scale, 32 * scale);
+    this.goalCastShadow.setPosition(x, base + 10 * scale).setDisplaySize(324 * scale, 155 * scale);
+    // GOLD changes rewards and guide color, never the goalpost's paint or padding.
+    this.goal.clearTint();
+    const across = Phaser.Math.Clamp(x / DESIGN_WIDTH, 0, 1);
+    this.goalLightLeft.setPosition(this.goal.x, this.goal.y).setDisplaySize(this.goal.displayWidth, this.goal.displayHeight)
+      .setAlpha(.45 + .3 * (1 - across));
+    this.goalLightRight.setPosition(this.goal.x, this.goal.y).setDisplaySize(this.goal.displayWidth, this.goal.displayHeight)
+      .setAlpha(.45 + .3 * across);
+    this.goalCastShadow.setAngle(-18 - (across - .5) * 24);
+    const target = this.target.clear();
+    target.fillStyle(0xc5ff35, .035).fillRoundedRect(x - perfectRange, topY + 25 * scale, perfectRange * 2, top - topY - 50 * scale, 12);
+    target.lineStyle(2, 0xd7ff83, .48);
+    for (let y = targetY + 42 * scale; y < top - 25 * scale; y += 20) target.lineBetween(x, y, x, y + 6);
+    target.strokeCircle(x, targetY, perfectRange);
+    target.lineStyle(2, 0xc5ff35, .8).lineBetween(x - 40 * scale, targetY, x - 25 * scale, targetY).lineBetween(x + 25 * scale, targetY, x + 40 * scale, targetY);
+  }
+
+  private createHud() {
+    const panel = this.add.graphics().fillStyle(0xffffff, .08).fillRoundedRect(38, 64, 704, 104, 24);
+    const icons = this.add.graphics();
+    const coin = this.add.image(208, 116, 'coin').setDisplaySize(48, 48);
+    icons.lineStyle(4, 0xc5ff35).beginPath().moveTo(398, 95).lineTo(398, 122).lineTo(432, 122).lineTo(432, 95).strokePath();
+    icons.lineBetween(415, 122, 415, 139).fillStyle(0xc5ff35).fillCircle(415, 140, 4);
+    const scoreLabel = this.text(257, 94, 'REWARDS', 18, '#dceaff').setOrigin(0, .5).setLetterSpacing(1);
+    const goalsLabel = this.text(459, 94, 'GOALS', 18, '#dceaff').setOrigin(0, .5).setLetterSpacing(1);
+    this.scoreText = this.text(257, 132, '0', 43).setOrigin(0, .5);
+    this.goalsText = this.text(459, 132, '0', 43).setOrigin(0, .5);
+    const timeLabel = this.text(390, 208, 'TIME LEFT', 26, '#c7f9ff').setLetterSpacing(2);
+    icons.lineStyle(2, 0x31dcff, .65).lineBetween(265, 208, 312, 208).lineBetween(468, 208, 515, 208);
+    this.timerText = this.text(390, 268, '00:30', 84, '#c5ff35').setPadding(24).setShadow(0, 0, '#73bb18', 18, true, true);
+    this.heartImages = Array.from({ length: RUN_RULES.lives }, (_, i) =>
+      this.add.image(590 + i * 47, 115, 'heart').setDisplaySize(46, 46));
+    this.hud = this.add.container(0, 0, [panel, icons, coin, scoreLabel, goalsLabel, this.scoreText, this.goalsText, timeLabel, this.timerText, ...this.heartImages]).setDepth(10);
+  }
+
+  private refreshHud() {
+    this.refreshClock();
+    this.scoreText.setText(String(this.run.score));
+    this.goalsText.setText(String(this.run.goals));
+    this.heartImages.forEach((heart, i) => {
+      const alive = i < this.run.lives;
+      heart.setTint(alive ? 0xffffff : 0x40516b).setAlpha(alive ? 1 : .3);
+    });
+  }
+
+  private refreshClock() {
+    const seconds = Math.ceil(this.clock.remainingMs / 1000);
+    const urgent = seconds <= 5;
+    this.timerText.setText(`00:${String(seconds).padStart(2, '0')}`).setColor(urgent ? '#ff795e' : '#c5ff35')
+      .setShadow(0, 0, urgent ? '#ad3425' : '#73bb18', 18, true, true);
+  }
+
+  private createPhoneChrome() {
+    // Decorative iPhone framing, not live device telemetry or navigation controls.
+    const time = this.text(58, 30, '9:41', 28).setFontFamily('Arial, sans-serif').setOrigin(0, .5);
+    const g = this.add.graphics().fillStyle(0xffffff, .95);
+    for (let i = 0; i < 4; i++) g.fillRoundedRect(584 + i * 9, 40 - (8 + i * 5), 6, 8 + i * 5, 2);
+    g.lineStyle(3, 0xffffff, .95);
+    for (const radius of [18, 12]) g.beginPath().arc(644, 39, radius, -Math.PI * .78, -Math.PI * .22).strokePath();
+    g.fillCircle(644, 36, 3);
+    g.lineStyle(2, 0xffffff, .65).strokeRoundedRect(679, 19, 42, 22, 5);
+    g.fillStyle(0xffffff, .95).fillRoundedRect(683, 23, 34, 14, 2);
+    g.fillStyle(0xffffff, .6).fillRoundedRect(724, 25, 3, 10, 1);
+    this.add.container(0, 0, [time, g]).setDepth(30);
+  }
+
+  private createStartPrompt() {
+    const textureKey = 'tap-hand-unified';
+    if (!this.textures.exists(textureKey)) {
+      const texture = this.textures.createCanvas(textureKey, 224, 256)!;
+      const ctx = texture.context;
+      ctx.scale(2, 2);
+      ctx.translate(0, 4);
+      ctx.strokeStyle = '#fff';
+      ctx.lineWidth = 5;
+      for (const [radius, opacity] of [[13, 1], [23, .9], [33, .75]]) {
+        ctx.globalAlpha = opacity;
+        ctx.beginPath();
+        ctx.arc(70, 32, radius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      // Flatten opaque parts first; fade the finished icon once to avoid overlap seams.
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#fff';
+      for (const [x, y, width, height] of [[46, 71, 54, 42], [62, 31, 18, 61], [40, 59, 18, 39], [91, 62, 16, 35], [43, 107, 62, 17]]) {
+        ctx.beginPath();
+        ctx.roundRect(x, y, width, height, 8);
+        ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.moveTo(49, 76);
+      ctx.arcTo(23, 59, 15, 68, 8);
+      ctx.arcTo(15, 68, 45, 105, 8);
+      ctx.arcTo(45, 105, 49, 76, 8);
+      ctx.closePath();
+      ctx.fill();
+      texture.refresh();
+    }
+    const hand = this.add.image(0, 0, textureKey).setOrigin(0).setAlpha(.96);
+    const handScale = .8;
+    // Align the visible hand bounds, then center the entire icon-and-label row.
+    hand.setPosition(-15 * handScale, -66 * handScale).setScale(handScale / 2);
+    const labelX = (107 - 15) * handScale + 20;
+    const label = this.text(labelX, 0, 'TAP TO KICK', 38).setOrigin(0, .5).setLetterSpacing(.5).setShadow(0, 3, '#001711', 8, true, true);
+    const promptWidth = labelX + label.width;
+    this.startPrompt = this.add.container((DESIGN_WIDTH - promptWidth) / 2, 1525, [hand, label]).setDepth(14);
+    this.tweens.add({ targets: this.startPrompt, alpha: .86, duration: 820, ease: 'Sine.InOut', yoyo: true, repeat: -1 });
+  }
+
+  private syncClock() {
+    this.clock.tick(performance.now());
+    this.refreshClock();
+    // A kick accepted before the buzzer always gets its final judgment.
+    if (this.clock.remainingMs === 0 && this.state !== 'KICKING' && this.state !== 'GAME_OVER') this.showGameOver();
+  }
+
+  private createGameOver() {
+    const dim = this.add.rectangle(390, 822, 780, 1644, 0x020c21, .86);
+    const card = this.add.graphics().fillStyle(0x061c3e, .98).fillRoundedRect(62, 525, 656, 705, 38)
+      .lineStyle(2, 0x258de8).strokeRoundedRect(62, 525, 656, 705, 38);
+    this.endTitle = this.text(390, 617, 'TIME’S UP', 80);
+    const label = this.text(390, 727, 'COINS', 26, '#ffda77').setLetterSpacing(3);
+    this.endScore = this.text(390, 825, '0', 144, '#c5ff35').setPadding(28).setShadow(0, 0, '#679e08', 22, true, true);
+    this.endSummary = this.text(390, 969, '', 36, '#b3cbe1');
+    const button = this.add.graphics().fillStyle(0x58890e).fillRoundedRect(110, 1090, 560, 110, 55)
+      .fillStyle(0xc5ff35).fillRoundedRect(110, 1080, 560, 110, 55)
+      .lineStyle(3, 0xedffa5).strokeRoundedRect(110, 1080, 560, 110, 55);
+    const play = this.text(390, 1135, 'PLAY AGAIN', 54, '#041331');
+    this.gameOver = this.add.container(0, 0, [dim, card, this.endTitle, label, this.endScore, this.endSummary, button, play]).setDepth(20).setVisible(false);
+  }
+
+  private showGameOver() {
+    if (this.state === 'GAME_OVER') return;
+    this.state = 'GAME_OVER';
+    this.clock.pause(performance.now());
+    this.resetTimer?.remove(false); this.resetTimer = undefined;
+    this.tweens.killTweensOf([this.goalVisual, this.aimVisual, this.aim, this.marker]);
+    this.effects.reset();
+    this.endTitle.setText(this.run.lives === 0 ? 'OUT OF LIVES' : 'TIME’S UP').setFontSize(this.run.lives === 0 ? 78 : 96);
+    this.aim.setAlpha(0); this.marker.setAlpha(0);
+    this.endScore.setText(String(this.run.score));
+    this.endSummary.setText(`${this.run.goals} ${this.run.goals === 1 ? 'GOAL' : 'GOALS'}`);
+    this.gameOver.setVisible(true).setAlpha(0);
+    this.effects.playEndCue(this.run.lives === 0);
+    this.drawControls();
+    this.tweens.add({ targets: this.gameOver, alpha: 1, duration: 200 });
+    this.announce(`${this.run.lives === 0 ? 'Out of lives' : 'Time is up'}. ${this.run.score} coins, ${this.run.goals} goals. Best ${this.bestScore}. Tap Play Again or press space.`);
+  }
+
+  private restartRun() {
+    if (this.state !== 'GAME_OVER') return;
+    this.tweens.killTweensOf(this.gameOver);
+    this.gameOver.setVisible(false);
+    this.run = newRun(); this.clock = new RunClock();
+    this.effects.reset();
+    this.kickCount = 0; this.lastResult = null;
+    this.startPrompt.setVisible(true).setAlpha(1);
+    this.nextBall();
+    this.drawControls();
+    this.startMusic();
+  }
+
+  private createControls() {
+    this.controls = this.add.graphics().setDepth(21);
+    this.drawControls();
+    const dim = this.add.rectangle(390, 822, 780, 1644, 0x020d23, .83);
+    const title = this.text(390, 750, 'PAUSED', 110, '#c5ff35');
+    const caption = this.text(390, 865, 'TAP TO GET BACK IN', 29, '#b8e7fa').setLetterSpacing(3);
+    this.pauseOverlay = this.add.container(0, 0, [dim, title, caption]).setDepth(20).setVisible(false);
+  }
+
+  private drawControls() {
+    const g = this.controls.clear();
+    g.fillStyle(0x081c4c, .95).fillCircle(90, 116, 29)
+      .lineStyle(2, 0x5465db, .8).strokeCircle(90, 116, 29);
+    const color = this.muted ? 0x8493ba : 0xffffff;
+    g.lineStyle(4, color).beginPath().moveTo(84, 125).lineTo(84, 104).lineTo(101, 100).lineTo(101, 121).strokePath();
+    g.fillStyle(color).fillEllipse(79, 126, 12, 8).fillEllipse(96, 122, 12, 8);
+    if (this.muted) g.lineStyle(3, 0xff8a75).lineBetween(72, 97, 108, 135);
+  }
+
+  private onTap(pointer: Phaser.Input.Pointer) {
+    if (pointer.x < 0 || pointer.x > 780 || pointer.y < 0 || pointer.y >= 1598) return;
+    this.effects.unlockAudio();
+    if (pointer.x >= 42 && pointer.x <= 138 && pointer.y >= 64 && pointer.y <= 168) {
+      this.muted = !this.muted;
+      this.effects.setMuted(this.paused || this.muted);
+      if (this.muted) this.music.pause(); else this.startMusic();
+      this.drawControls(); return;
+    }
+    if (this.state === 'GAME_OVER') {
+      if (pointer.x >= 110 && pointer.x <= 670 && pointer.y >= 1080 && pointer.y <= 1190) this.restartRun();
+      return;
+    }
+    if (this.paused) { this.togglePause(); return; }
+    if (pointer.y < 350) return;
+    this.kick();
+  }
+
+  private onSpace(event: KeyboardEvent) {
+    if (event.repeat) return;
+    this.effects.unlockAudio();
+    if (this.state === 'GAME_OVER') { this.restartRun(); return; }
+    if (this.paused) this.togglePause(); else this.kick();
+  }
+
+  private startMusic() {
+    if (this.muted || this.paused) return;
+    if (this.music.isPaused) this.music.resume();
+    else if (!this.music.isPlaying) this.music.play('loop');
+  }
+
+  private onBlur() {
+    this.music.pause();
+    if (!this.paused) this.togglePause();
+    this.effects.stopSounds();
+  }
+
+  private togglePause() {
+    if (this.state === 'GAME_OVER') return;
+    if (!this.paused) {
+      this.syncClock();
+      if (this.state as State === 'GAME_OVER') return;
+      this.clock.pause(performance.now());
+    } else this.clock.resume(performance.now());
+    this.paused = !this.paused;
+    this.pauseOverlay.setVisible(this.paused);
+    this.time.paused = this.paused;
+    this.effects.setMuted(this.paused || this.muted);
+    this.effects.setPaused(this.paused);
+    if (this.paused) this.music.pause(); else this.startMusic();
+    if (this.paused) this.tweens.pauseAll(); else this.tweens.resumeAll();
+    this.drawControls();
+  }
+
+  kick() {
+    if (this.state !== 'AIMING' || this.paused) return;
+    this.syncClock();
+    if (this.state as State !== 'AIMING') return;
+    this.clock.start(performance.now());
+    this.startMusic();
+    this.startPrompt.setVisible(false);
+    // Lock state synchronously before creating any tweens: rapid taps cannot queue kicks.
+    this.state = 'KICKING';
+    this.kickCount++;
+    this.lockedRound = { ...this.round };
+    this.lockedAimX = this.aimVisual.x;
+    this.finalTargetX = this.lockedAimX + this.lockedRound.windOffset;
+    this.refreshHud();
+    this.tweens.add({ targets: [this.aim, this.marker], alpha: 0, duration: 90 });
+    this.effects.impact(this.lockedRound.startX);
+    this.ball.kick(this.lockedAimX, this.lockedRound, () => this.resolveKick());
+  }
+
+  private resolveKick() {
+    if (this.state !== 'KICKING' || !this.lockedRound) return;
+    this.state = 'RESULT';
+    const locked = this.lockedRound;
+    this.lastResult = judgeKick(this.finalTargetX, locked.centerX, locked.width, locked.perfectRange);
+    this.run = recordKick(this.run, this.lastResult, locked.distance, locked.rewardMultiplier);
+    if (this.run.score > this.bestScore) {
+      this.bestScore = this.run.score;
+      try { saveBest(window.localStorage, this.bestScore); } catch { /* In-memory best still works. */ }
+    }
+    this.refreshHud();
+    this.ball.finish();
+    this.effects.show(this.lastResult, this.finalTargetX, locked.targetY, this.run.streak, locked.rewardMultiplier, this.run.goalStreak);
+    this.announce(`${this.lastResult}. ${this.run.score} coins. ${this.run.lives} lives left.`);
+    this.syncClock();
+    if (this.state as State === 'GAME_OVER') return;
+    this.resetTimer = this.time.delayedCall(TUNING.recoveryDuration, this.nextBall, [], this);
+  }
+
+  private nextBall() {
+    this.resetTimer = undefined;
+    if (this.run.lives === 0 || this.clock.remainingMs === 0) { this.showGameOver(); return; }
+    this.state = 'TRANSITION';
+    this.lockedRound = undefined;
+    if (this.lastResult !== 'NO GOOD') this.round = createRound(this.run.goals, Math.random, this.run.shots ? this.round : undefined);
+    this.round.centerX = goalPosition(0, this.round);
+    this.ball.prepare(this.round.startX, RUN_RULES.transitionDuration);
+    this.motionTime = 0;
+    this.refreshHud();
+    this.hud.setAlpha(1);
+    this.aim.setAlpha(.3); this.marker.setAlpha(.3);
+    this.tweens.add({
+      targets: this.aimVisual, x: aimPosition(0, this.round), windOffset: this.round.windOffset,
+      duration: RUN_RULES.transitionDuration, ease: 'Sine.InOut',
+    });
+    this.tweens.add({
+      targets: this.goalVisual, centerX: this.round.centerX, scale: this.round.goalScale,
+      duration: RUN_RULES.transitionDuration, ease: 'Sine.InOut',
+      onUpdate: () => { this.refreshGoal(); this.drawAim(); },
+      onComplete: () => {
+        if (this.state !== 'TRANSITION') return;
+        this.state = 'AIMING';
+        this.aim.setAlpha(1); this.marker.setAlpha(1);
+        this.refreshHud(); this.drawAim();
+      },
+    });
+  }
+
+  update(_time: number, delta: number) {
+    if (this.paused || this.state === 'GAME_OVER') return;
+    this.syncClock();
+    this.visualTime += Math.min(delta, 50) / 1000;
+    this.ambience.update(this.visualTime);
+    this.ball.updateLighting(this.visualTime, this.state === 'AIMING' || this.state === 'TRANSITION', this.round.pattern === 'GOLD');
+    if (this.state !== 'AIMING') return;
+    this.motionTime += Math.min(delta, 50) / 1000;
+    this.round.centerX = goalPosition(this.motionTime, this.round);
+    this.aimVisual.x = aimPosition(this.motionTime, this.round);
+    this.goalVisual.centerX = this.round.centerX;
+    this.refreshGoal();
+    this.drawAim();
+  }
+
+  private drawAim() {
+    const g = this.aim.clear();
+    const sx = this.ball.sprite.x;
+    const sy = TUNING.ballStartY - 75;
+    const targetY = TUNING.goalBaseY + (TUNING.goalTargetY - TUNING.goalBaseY) * this.goalVisual.scale;
+    const ty = targetY + 40;
+    const tx = this.aimVisual.x;
+    // Constant-curvature circle: vertical tangent at the ball, exact live endpoint.
+    // Centered aim is the straight-line limit; this only changes the guide's shape.
+    const dx = tx - sx, dy = ty - sy;
+    const straight = Math.abs(dx) < .001;
+    const sweep = 2 * Math.atan2(dx, -dy);
+    const radius = straight ? 0 : (dx * dx + dy * dy) / (2 * dx);
+    const sample = (t: number) => {
+      const angle = sweep * t;
+      // 2 sin²(a/2) avoids cancellation in 1 - cos(a) near the center.
+      return {
+        x: straight ? sx + dx * t : sx + 2 * radius * Math.sin(angle / 2) ** 2,
+        y: straight ? sy + dy * t : sy - radius * Math.sin(angle),
+        nx: straight ? 1 : Math.cos(angle), ny: straight ? 0 : Math.sin(angle),
+        width: Phaser.Math.Linear(86, 11, t),
+      };
+    };
+    const smooth = (v: number) => { const t = Phaser.Math.Clamp(v, 0, 1); return t * t * (3 - 2 * t); };
+    const fade = (t: number) => smooth(t / .18) * smooth((1 - t) / .24);
+    const pulse = .5 + .5 * Math.sin(this.visualTime * 2.8);
+    const gold = this.round.pattern === 'GOLD';
+    const layers = gold
+      ? [[24, .04, 0xffaa15], [13, .09, 0xffc428], [6, .32, 0xffdd48], [2, .8, 0xfff3d7]]
+      : [[24, .04, 0x15ffaa], [13, .09, 0x28ffc8], [6, .32, 0x48ffdc], [2, .8, 0xd7fff3]];
+    const segments = 48;
+    for (let i = 0; i < segments; i++) {
+      const t = i / segments, next = (i + 1) / segments;
+      const a = sample(t), b = sample(next), alpha = fade((t + next) / 2);
+      g.fillStyle(gold ? 0xe9b520 : 0x20e9bd, (.13 + .1 * (1 - t) + pulse * .025) * alpha)
+        .beginPath().moveTo(a.x - a.nx * a.width, a.y - a.ny * a.width)
+        .lineTo(b.x - b.nx * b.width, b.y - b.ny * b.width)
+        .lineTo(b.x + b.nx * b.width, b.y + b.ny * b.width)
+        .lineTo(a.x + a.nx * a.width, a.y + a.ny * a.width).closePath().fillPath();
+      for (const [width, opacity, color] of layers) {
+        g.lineStyle(width, color, opacity * alpha);
+        for (const side of [-1, 1]) g.lineBetween(
+          a.x + side * a.nx * a.width, a.y + side * a.ny * a.width,
+          b.x + side * b.nx * b.width, b.y + side * b.ny * b.width);
+      }
+    }
+    for (let i = 0; i < 6; i++) {
+      const t = (i / 6 + this.visualTime * .24) % 1;
+      const p = sample(t), w = Phaser.Math.Linear(48, 7, t);
+      // Chevrons follow the ribbon's tangent instead of remaining rigidly vertical.
+      const points = [[0, .65], [1, 0], [1, -.45], [0, .2], [-1, -.45], [-1, 0]];
+      g.fillStyle(gold ? 0xfff2c0 : 0xe3fff4, fade(t) * .9).beginPath();
+      points.forEach(([u, v], index) => {
+        const x = p.x + (p.nx * u + p.ny * v) * w;
+        const y = p.y + (p.ny * u - p.nx * v) * w;
+        if (index === 0) g.moveTo(x, y); else g.lineTo(x, y);
+      });
+      g.closePath().fillPath();
+    }
+    for (let i = 0; i < 9; i++) {
+      const t = (i / 9 + this.visualTime * .3) % 1;
+      const p = sample(t), offset = Math.sin(i * 12.7) * p.width * .76;
+      const x = p.x + p.nx * offset, y = p.y + p.ny * offset;
+      const alpha = fade(t) * .7;
+      g.fillStyle(gold ? 0xffdb39 : 0x39ffe5, alpha * .15).fillCircle(x, y, 7 - 4 * t);
+      g.fillStyle(0xeaffff, alpha).fillCircle(x, y, 1.8 - t);
+    }
+    this.marker.setPosition(tx, targetY).setScale(this.goalVisual.scale);
+    // The amber landing hint exposes wind compensation without hiding the raw aim.
+    const drift = this.aimVisual.windOffset;
+    if (Math.abs(drift) > 1) {
+      const end = tx + drift;
+      g.lineStyle(2, 0xffd477, .85);
+      for (let d = 0; d < Math.abs(drift); d += 7) {
+        const direction = Math.sign(drift);
+        g.lineBetween(tx + d * direction, targetY, tx + Math.min(d + 3, Math.abs(drift)) * direction, targetY);
+      }
+      g.strokeCircle(end, targetY, 8).fillStyle(0xffe5a0).fillCircle(end, targetY, 3);
+    }
+  }
+
+  private announce(message: string) {
+    const node = document.getElementById('announcer');
+    if (node) node.textContent = message;
+  }
+
+  private cleanup() {
+    this.resetTimer?.remove(false);
+    this.resetTimer = undefined;
+    this.input.off('pointerdown', this.onTap, this);
+    this.input.keyboard?.off('keydown-SPACE', this.onSpace, this);
+    this.input.keyboard?.off('keydown-ESC', this.togglePause, this);
+    this.game.events.off(Phaser.Core.Events.BLUR, this.onBlur, this);
+    this.tweens.killAll();
+    this.ball.destroy(); this.effects.destroy(); this.music.destroy(); this.ambience.destroy();
+    this.time.paused = false;
+  }
+}
