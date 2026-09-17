@@ -40,6 +40,13 @@ export class BallController {
   }
 
   updateLighting(time: number, ready: boolean, gold: boolean) {
+    if (ready) {
+      // Absolute offsets avoid drift; the scene's visual clock freezes in the background.
+      const breath = .5 - .5 * Math.cos(time * Math.PI * 2 / TUNING.ballIdlePeriod);
+      this.sprite.setY(TUNING.ballStartY - breath * TUNING.ballIdleLift)
+        .setScale(this.baseScale * TUNING.ballStartScale * (1 + breath * TUNING.ballIdleScale));
+      this.shadow.setScale(1 - breath * .035).setAlpha(.5 - breath * .035);
+    }
     const breathing = .5 + .5 * Math.sin(time * 2.6);
     const glowColor = gold ? 0xffdd72 : 0x4fffe0;
     this.rim.setPosition(this.sprite.x, this.sprite.y).setRotation(this.sprite.rotation)
@@ -49,8 +56,12 @@ export class BallController {
   }
 
   kick(targetX: number, options: FlightOptions, complete: () => void) {
+    this.scene.tweens.add({ targets: this.sprite, y: TUNING.ballStartY, duration: TUNING.impactDuration, ease: 'Sine.Out' });
     this.scene.tweens.add({ targets: this.sprite, scaleX: this.baseScale * 1.12, scaleY: this.baseScale * .92, duration: TUNING.impactDuration / 2, yoyo: true,
-      onComplete: () => this.fly(targetX, options, complete),
+      onComplete: () => {
+        this.sprite.setY(TUNING.ballStartY).setScale(this.baseScale * TUNING.ballStartScale);
+        this.fly(targetX, options, complete);
+      },
     });
     this.scene.tweens.add({ targets: this.shadow, alpha: 0, scaleX: .25, scaleY: .25, duration: 160 });
   }
