@@ -36,6 +36,7 @@ export const ASSETS = {
   goal: './assets/goal-rendered.png?v=figma-20260917-6',
   coin: './assets/coin-green.png?v=figma-20260917-2',
   heart: './assets/heart-3d.png?v=figma-20260917-2',
+  tapHand: './assets/tap-hand.svg?v=figma-20260917-1',
   music: './assets/stadium-rush.m4a?v=stadium-brass',
   cheer: './assets/cheer-crowd.mp3?v=1',
 };

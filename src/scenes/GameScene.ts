@@ -61,6 +61,7 @@ export class GameScene extends Phaser.Scene {
     this.load.image('goal', ASSETS.goal);
     this.load.image('coin', ASSETS.coin);
     this.load.image('heart', ASSETS.heart);
+    this.load.svg('tap-hand', ASSETS.tapHand, { scale: 2 });
     this.load.audio('music', ASSETS.music);
     this.load.audio('cheer', ASSETS.cheer);
     this.load.on('loaderror', this.onLoadError, this);
@@ -249,42 +250,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private createStartPrompt() {
-    const textureKey = 'tap-hand-unified';
-    if (!this.textures.exists(textureKey)) {
-      const texture = this.textures.createCanvas(textureKey, 224, 256)!;
-      const ctx = texture.context;
-      ctx.scale(2, 2);
-      ctx.translate(0, 4);
-      ctx.strokeStyle = '#fff';
-      ctx.lineWidth = 5;
-      for (const [radius, opacity] of [[13, 1], [23, .9], [33, .75]]) {
-        ctx.globalAlpha = opacity;
-        ctx.beginPath();
-        ctx.arc(70, 32, radius, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-      // Flatten opaque parts first; fade the finished icon once to avoid overlap seams.
-      ctx.globalAlpha = 1;
-      ctx.fillStyle = '#fff';
-      for (const [x, y, width, height] of [[46, 71, 54, 42], [62, 31, 18, 61], [40, 59, 18, 39], [91, 62, 16, 35], [43, 107, 62, 17]]) {
-        ctx.beginPath();
-        ctx.roundRect(x, y, width, height, 8);
-        ctx.fill();
-      }
-      ctx.beginPath();
-      ctx.moveTo(49, 76);
-      ctx.arcTo(23, 59, 15, 68, 8);
-      ctx.arcTo(15, 68, 45, 105, 8);
-      ctx.arcTo(45, 105, 49, 76, 8);
-      ctx.closePath();
-      ctx.fill();
-      texture.refresh();
-    }
-    const hand = this.add.image(0, 0, textureKey).setOrigin(0).setAlpha(.96);
-    const handScale = .8;
-    // Align the visible hand bounds, then center the entire icon-and-label row.
-    hand.setPosition(-15 * handScale, -66 * handScale).setScale(handScale / 2);
-    const labelX = (107 - 15) * handScale + 20;
+    // Exact Figma export; opacity and editable geometry are baked into the SVG.
+    // Offset transparent padding so the visible icon-and-label row stays centered.
+    const hand = this.add.image(-23, -46, 'tap-hand').setOrigin(0).setDisplaySize(90, 103);
+    const labelX = 84.4 - 23 + 20;
     const label = this.text(labelX, 0, 'TAP TO KICK', 38).setOrigin(0, .5).setLetterSpacing(.5).setShadow(0, 3, '#001711', 8, true, true);
     const promptWidth = labelX + label.width;
     this.startPrompt = this.add.container((DESIGN_WIDTH - promptWidth) / 2, 1525, [hand, label]).setDepth(14);
